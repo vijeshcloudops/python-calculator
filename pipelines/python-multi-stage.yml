@@ -1,0 +1,68 @@
+# python-multi-stage
+# Build stage of the multi-stage pipeline. During the lab you EDIT this file in the Azure
+# Pipelines editor to add a Deploy stage (first as a job, then refactored into a deployment
+# job bound to the 'approvals' environment).
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - src/*
+
+resources:
+  repositories:
+    - repository: self
+      trigger: none
+
+variables:
+  - group: lab-vars
+
+stages:
+- stage: Build
+  displayName: Build Python Solution
+  jobs:
+  - job: Build
+    pool:
+      name: $(agentPool)
+      clean: true
+    steps:
+    - script: |
+        sudo apt-get update
+        sudo apt-get install -y python3 python3-pip python3-venv zip
+      displayName: Install Python3, pip, zip, venv
+    - script: |
+        python3 -m venv venv
+        source venv/bin/activate
+        pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      displayName: Restore Python dependencies
+    - script: |
+        source venv/bin/activate
+        pytest tests/test_calc.py
+      displayName: Run tests
+    - script: |
+        mkdir -p $(Build.ArtifactStagingDirectory)/app
+        cp -r src python_calc.py requirements.txt $(Build.ArtifactStagingDirectory)/app/
+      displayName: Copy application files to staging
+    - task: ArchiveFiles@2
+      displayName: Archive application as Web.zip
+      inputs:
+        rootFolderOrFile: '$(Build.ArtifactStagingDirectory)/app'
+        includeRootFolder: false
+        archiveType: 'zip'
+        archiveFile: '$(Build.ArtifactStagingDirectory)/Web.zip'
+        replaceExistingArchive: true
+    - task: PublishPipelineArtifact@1
+      displayName: Publish Website artifact
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/Web.zip'
+        artifact: 'Website'
+        publishLocation: 'pipeline'
+    - task: PublishPipelineArtifact@1
+      displayName: Publish Bicep artifact
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/infra/webapp.bicep'
+        artifact: 'Bicep'
+        publishLocation: 'pipeline'

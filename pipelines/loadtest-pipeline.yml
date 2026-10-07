@@ -1,0 +1,101 @@
+# loadtest-pipeline
+# Builds the calculator, deploys it to a Linux Web App, and (after you add the LoadTest stage in
+# Exercise 3) runs an Azure Load Testing test against it -- failing the build on the failure
+# criteria in loadtest/loadtest.yaml.
+
+trigger: none
+
+resources:
+  repositories:
+    - repository: self
+      trigger: none
+
+variables:
+  - group: lab-vars            # resourceGroup, location, subscriptionId, azureServiceConnection
+
+stages:
+- stage: Build
+  displayName: Build
+  jobs:
+  - job: Build
+    pool:
+      name: $(agentPool)
+      clean: true
+    steps:
+    - script: |
+        sudo apt-get update
+        sudo apt-get install -y python3 python3-pip python3-venv
+      displayName: Install Python3, pip, venv
+    - script: |
+        python3 -m venv venv
+        source venv/bin/activate
+        pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pytest tests/test_calc.py
+      displayName: Restore dependencies and run tests
+    - script: |
+        mkdir -p $(Build.ArtifactStagingDirectory)/app
+        cp -r src python_calc.py requirements.txt $(Build.ArtifactStagingDirectory)/app/
+      displayName: Stage application files
+    - task: ArchiveFiles@2
+      displayName: Archive application as Web.zip
+      inputs:
+        rootFolderOrFile: '$(Build.ArtifactStagingDirectory)/app'
+        includeRootFolder: false
+        archiveType: zip
+        archiveFile: '$(Build.ArtifactStagingDirectory)/Web.zip'
+        replaceExistingArchive: true
+    - task: PublishPipelineArtifact@1
+      displayName: Publish Website artifact
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/Web.zip'
+        artifact: Website
+        publishLocation: pipeline
+    - task: PublishPipelineArtifact@1
+      displayName: Publish Bicep artifact
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/infra/webapp.bicep'
+        artifact: Bicep
+        publishLocation: pipeline
+
+- stage: Deploy
+  displayName: Deploy Web App
+  dependsOn: Build
+  jobs:
+  - job: Deploy
+    pool:
+      name: $(agentPool)
+      clean: true
+    steps:
+    - download: current
+      artifact: Website
+    - download: current
+      artifact: Bicep
+    - task: AzureCLI@2
+      name: provision
+      displayName: Provision Web App (Bicep)
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          WEBAPP=$(az deployment group create \
+            --resource-group "$(resourceGroup)" \
+            --template-file "$(Pipeline.Workspace)/Bicep/webapp.bicep" \
+            --parameters location="westus" \
+            --query properties.outputs.webAppName.value -o tsv)
+          echo "Deployed web app: $WEBAPP"
+          echo "##vso[task.setvariable variable=webAppName;isOutput=true]$WEBAPP"
+    - task: AzureWebApp@1
+      displayName: Deploy app to Web App
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        appType: webAppLinux
+        appName: '$(provision.webAppName)'
+        package: '$(Pipeline.Workspace)/Website/Web.zip'
+        startUpCommand: 'gunicorn --bind=0.0.0.0:8000 python_calc:app'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Exercise 3: add the LoadTest stage below (it runs the JMeter test against the
+# deployed app via `az load` and fails the build on the loadtest.yaml criteria).
+# ─────────────────────────────────────────────────────────────────────────────

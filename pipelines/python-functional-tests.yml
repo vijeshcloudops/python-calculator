@@ -1,0 +1,52 @@
+# python-functional-tests
+# CI pipeline that runs the test suite and publishes the results to the pipeline's Tests tab.
+# It ships with the unit tests; in the lab you EDIT it to add the functional tests step.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - src/*
+      - tests/*
+      - functional-tests/*
+      - python_calc.py
+
+resources:
+  repositories:
+    - repository: self
+      trigger: none
+
+variables:
+  - group: lab-vars
+
+pool:
+  name: $(agentPool)
+
+steps:
+- script: |
+    sudo apt-get update
+    sudo apt-get install -y python3 python3-pip python3-venv
+  displayName: Install Python3, pip, venv
+
+- script: |
+    python3 -m venv venv
+    source venv/bin/activate
+    pip install --upgrade pip
+    if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+  displayName: Install dependencies
+
+- script: |
+    source venv/bin/activate
+    pytest tests/test_calc.py --junitxml=unit-results.xml
+  displayName: Run unit tests
+
+- task: PublishTestResults@2
+  displayName: Publish test results
+  condition: always()
+  inputs:
+    testResultsFormat: 'JUnit'
+    testResultsFiles: '*-results.xml'
+    mergeTestResults: true
+    testRunTitle: 'Calculator Tests'

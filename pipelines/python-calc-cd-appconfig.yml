@@ -1,0 +1,67 @@
+# python-calc-cd-appconfig
+# CD for the dynamic-configuration / feature-flags lab. It triggers when the CI pipeline
+# (python-calc-ci) finishes, provisions a Linux Web App with a system-assigned managed identity
+# via infra/webapp-appconfig.bicep, and deploys the 'Website' artifact that CI published.
+# After this pipeline succeeds, the lab grants the Web App's identity 'App Configuration Data
+# Reader' and sets the UseAppConfig / AppConfigEndpoint app settings, so dynamic configuration and
+# feature flags take effect at runtime -- no redeploy needed.
+#
+# NOTE: the pipeline-resource alias/source below must match the name you give the CI pipeline
+# (python-calc-ci) when you create it in Azure DevOps.
+
+trigger: none
+
+resources:
+  pipelines:
+    - pipeline: python-calc-ci      # resource alias used below
+      source: python-calc-ci        # name of the CI pipeline in Azure DevOps
+      trigger: true                 # auto-run this CD when CI completes
+
+variables:
+  - group: lab-vars
+
+stages:
+- stage: Deploy
+  displayName: Deploy Web App
+  jobs:
+  - job: Deploy
+    pool:
+      name: $(agentPool)
+      clean: true
+    steps:
+    - checkout: self                # needed for infra/webapp-appconfig.bicep
+    - task: DownloadPipelineArtifact@2
+      displayName: Download Website artifact from CI
+      inputs:
+        source: 'specific'
+        project: '$(System.TeamProject)'
+        pipeline: '$(resources.pipeline.python-calc-ci.pipelineId)'
+        runVersion: 'latest'
+        artifact: 'Website'
+        path: '$(Pipeline.Workspace)/Website'
+    - task: AzureCLI@2
+      name: provision
+      displayName: Provision Web App (Bicep, system-assigned identity)
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          WEBAPP=$(az deployment group create \
+            --resource-group "$(resourceGroup)" \
+            --template-file "$(Build.SourcesDirectory)/infra/webapp-appconfig.bicep" \
+            --parameters location="westus" \
+            --query properties.outputs.webAppName.value -o tsv)
+          echo "Deployed web app: $WEBAPP"
+          echo "##vso[task.setvariable variable=webAppName;isOutput=true]$WEBAPP"
+    - task: AzureRmWebAppDeployment@5
+      displayName: Deploy app to Web App
+      inputs:
+        ConnectionType: 'AzureRM'
+        azureSubscription: '$(azureServiceConnection)'
+        appType: 'webAppLinux'
+        WebAppName: '$(provision.webAppName)'
+        packageForLinux: '$(Pipeline.Workspace)/Website/Web.zip'
+        RuntimeStack: 'PYTHON|3.12'
+        StartupCommand: 'gunicorn --bind=0.0.0.0:8000 python_calc:app'
+        DeploymentTypeLinux: 'zipDeploy'
